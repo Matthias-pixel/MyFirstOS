@@ -1,0 +1,10 @@
+{
+    "files.associations": {
+        "*.ejs": "html",
+        "stdio.h": "c",
+        "stdarg.h": "c",
+        "compare": "c",
+        "io.h": "c",
+        "limits": "c"
+    }
+}
