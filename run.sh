@@ -1,5 +1,6 @@
 clear;
 set -e
+mkdir -p build
 nasm "src/boot.asm" -f bin -o "build/boot.bin"
 nasm "src/kernel_entry.asm" -f elf -o "build/kernel_entry.o"
 #i386-elf-gcc -ffreestanding -m32 -g -c "src/stdio.c" -o "build/stdio.o"
