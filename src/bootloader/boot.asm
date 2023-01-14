@@ -1,7 +1,13 @@
-org 0x7c00
+org 0x7C00
 bits 16
-; ---------------- Fat12 headers -------------------------------------
 
+
+%define ENDL 0x0D, 0x0A
+
+
+;
+; FAT12 header
+; 
 jmp short start
 nop
 
@@ -27,117 +33,197 @@ ebr_volume_id:              db 12h, 34h, 56h, 78h   ; serial number, value doesn
 ebr_volume_label:           db 'MY FIRST OS'        ; 11 bytes, padded with spaces
 ebr_system_id:              db 'FAT12   '           ; 8 bytes
 
-; --------------- Bootloader main ------------------------------------
+;
+; Code goes here
+;
+
 start:
     jmp main
-KERNEL_LOCATION equ 0x1000
-BOOT_DISK: db 0
-SECTOR_COUNT: db 2
-main:
-    mov [BOOT_DISK], dl
-initialize_registers:
-    xor ax, ax                          
-    mov es, ax
-    mov ds, ax
-    mov bp, 0x8000
-    mov sp, bp
 
-    mov bx, KERNEL_LOCATION
-load_sectors_from_disk:
-    mov ah, 2                   ; magic number
-    mov al, [SECTOR_COUNT]      ; number of sectors to read
-    mov ch, 0                   ; C ylinder number to start reading at
-    mov dh, 0                   ; H ead     number to start reading at
-    mov cl, 2                   ; S ector   number to start reading at
-    mov dl, [BOOT_DISK]         ; drive number to read from
-    int 0x13
-check_for_disk_load_error:
-    jc disk_error
-    cmp al, [SECTOR_COUNT]
-    jne not_enough_sectors_error
-switch_to_text_mode:
-    mov ah, 0x0
-    mov al, 0x3
+;
+; Prints a string to the screen
+; Params:
+;   - ds:si points to string
+;
+puts:
+    ; save registers we will modify
+    push si
+    push ax
+    push bx
+
+.loop:
+    lodsb               ; loads next character in al
+    or al, al           ; verify if next character is null?
+    jz .done
+
+    mov ah, 0x0E        ; call bios interrupt
+    mov bh, 0           ; set page number to 0
     int 0x10
-enter_protected_mode:
-    cli                         ; disable interrupts
-    lgdt [GDT_Descriptor]       ; load the DGT table
-    ; change last bit of cr0 to 1
-    mov eax, cr0
-    or eax, 1
-    mov cr0, eax
-    ; ----- 32 bit protectd mode -----
-    ; far jump
-    jmp CODESEG:start_protected_mode
 
-;; --------------- Protected mode main ------------------------------------
-[bits 32]
-start_protected_mode:
-    mov ax, DATASEG
-    mov ds, ax
-    mov ss, ax
-    mov es, ax
-    mov fs, ax
-    mov gs, ax
-    mov ebp, 0x90000
-    mov esp, ebp
+    jmp .loop
 
-    jmp KERNEL_LOCATION
-
-;; --------------- Error handling ------------------------
-disk_error:
-    mov ecx, disk_error_message
-    call print_string
-    hlt
-not_enough_sectors_error:
-    mov ecx, not_enough_sectors_error_message
-    call print_string
-    hlt
-;; --------------- Print strings ------------------------
-print_string:
-print_string_loop:
-    mov ah, 0x0e
-    mov al, [ecx]
-    cmp al, 0
-    je print_string_exit
-    int 0x10
-    inc ecx
-    jmp print_string_loop
-print_string_exit:
+.done:
+    pop bx
+    pop ax
+    pop si    
     ret
-;; --------------- GDT-Table ----------------
-GDT_Start:
-    null_descriptor:
-        dd 0                ; four times 00000000
-        dd 0                ; four times 00000000
-    code_descriptor:
-        dw 0xffff           ; first 16 bits of the limit (size of the segment)
-        dw 0                ; 16 bits +
-        db 0                ; 8 bits = 24 bits of the base (start of the segment)
-        db 0b10011010         ; presence, priviledge, type properties + Type flags
-        db 0b11001111         ; other flags + last four bits of the limit (size of the segment)
-        db 0                ; last 8 bits of the base
-    data_descriptor:
-        dw 0xffff           ; first 16 bits of the limit (size of the segment)
-        dw 0                ; 16 bits +
-        db 0                ; 8 bits = 24 bits of the base (start of the segment)
-        db 0b10010010         ; presence, priviledge, type properties + Type flags
-        db 0b11001111         ; other flags + last four bits of the limit (size of the segment)
-        db 0                ; last 8 bits of the base
-GDT_End:
-GDT_Descriptor:
-    dw GDT_End - GDT_Start - 1  ; size of the GDT table
-    dd GDT_Start                ; start of the GDT table
-CODESEG equ code_descriptor - GDT_Start
-DATASEG equ data_descriptor - GDT_Start
-; equ sets constants
+    
 
-;; --------------- Data ----------------
-not_enough_sectors_error_message:
-    db "Error: Not all sectors were read!", 13, 10, 0
-disk_error_message:
-    db "Error: Disk could not be read!", 13, 10, 0
+main:
+    ; setup data segments
+    mov ax, 0                   ; can't set ds/es directly
+    mov ds, ax
+    mov es, ax
+    
+    ; setup stack
+    mov ss, ax
+    mov sp, 0x7C00              ; stack grows downwards from where we are loaded in memory
 
-;; --------------- End of bootloader ----------------
-times 510-($-$$) db 0       ; Fill the remaining space with zeros
-db 0x55, 0xaa               ; Mark the disk as executable
+    ; read something from floppy disk
+    ; BIOS should set DL to drive number
+    mov [ebr_drive_number], dl
+
+    mov ax, 1                   ; LBA=1, second sector from disk
+    mov cl, 1                   ; 1 sector to read
+    mov bx, 0x7E00              ; data should be after the bootloader
+    call disk_read
+
+    ; print hello message
+    mov si, msg_hello
+    call puts
+
+    cli                         ; disable interrupts, this way CPU can't get out of "halt" state
+    hlt
+
+
+;
+; Error handlers
+;
+
+floppy_error:
+    mov si, msg_read_failed
+    call puts
+    jmp wait_key_and_reboot
+
+wait_key_and_reboot:
+    mov ah, 0
+    int 0x16                    ; wait for keypress
+    jmp 0xFFFF:0                ; jump to beginning of BIOS, should reboot
+
+.halt:
+    cli                         ; disable interrupts, this way CPU can't get out of "halt" state
+    hlt
+
+
+;
+; Disk routines
+;
+
+;
+; Converts an LBA address to a CHS address
+; Parameters:
+;   - ax: LBA address
+; Returns:
+;   - cx [bits 0-5]: sector number
+;   - cx [bits 6-15]: cylinder
+;   - dh: head
+;
+
+lba_to_chs:
+
+    push ax
+    push dx
+
+    xor dx, dx                          ; dx = 0
+    div word [bdb_sectors_per_track]    ; ax = LBA / SectorsPerTrack
+                                        ; dx = LBA % SectorsPerTrack
+
+    inc dx                              ; dx = (LBA % SectorsPerTrack + 1) = sector
+    mov cx, dx                          ; cx = sector
+
+    xor dx, dx                          ; dx = 0
+    div word [bdb_heads]                ; ax = (LBA / SectorsPerTrack) / Heads = cylinder
+                                        ; dx = (LBA / SectorsPerTrack) % Heads = head
+    mov dh, dl                          ; dh = head
+    mov ch, al                          ; ch = cylinder (lower 8 bits)
+    shl ah, 6
+    or cl, ah                           ; put upper 2 bits of cylinder in CL
+
+    pop ax
+    mov dl, al                          ; restore DL
+    pop ax
+    ret
+
+
+;
+; Reads sectors from a disk
+; Parameters:
+;   - ax: LBA address
+;   - cl: number of sectors to read (up to 128)
+;   - dl: drive number
+;   - es:bx: memory address where to store read data
+;
+disk_read:
+
+    push ax                             ; save registers we will modify
+    push bx
+    push cx
+    push dx
+    push di
+
+    push cx                             ; temporarily save CL (number of sectors to read)
+    call lba_to_chs                     ; compute CHS
+    pop ax                              ; AL = number of sectors to read
+    
+    mov ah, 02h
+    mov di, 3                           ; retry count
+
+.retry:
+    pusha                               ; save all registers, we don't know what bios modifies
+    stc                                 ; set carry flag, some BIOS'es don't set it
+    int 13h                             ; carry flag cleared = success
+    jnc .done                           ; jump if carry not set
+
+    ; read failed
+    popa
+    call disk_reset
+
+    dec di
+    test di, di
+    jnz .retry
+
+.fail:
+    ; all attempts are exhausted
+    jmp floppy_error
+
+.done:
+    popa
+
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax                             ; restore registers modified
+    ret
+
+
+;
+; Resets disk controller
+; Parameters:
+;   dl: drive number
+;
+disk_reset:
+    pusha
+    mov ah, 0
+    stc
+    int 13h
+    jc floppy_error
+    popa
+    ret
+times 510-($-$$) db 0
+
+
+msg_hello:              db 'My awesome OS is starting...', ENDL, 0
+msg_read_failed:        db 'Read from disk failed!', ENDL, 0
+
+dw 0AA55h
